@@ -13,8 +13,9 @@ use smoltcp::socket::tcp::{self, ConnectError, State};
 use smoltcp::wire::{IpEndpoint, IpListenEndpoint};
 
 use super::addr::{from_core_sockaddr, into_core_sockaddr, is_unspecified, UNSPECIFIED_ENDPOINT};
-use super::{SocketSetWrapper, LISTEN_TABLE, SOCKET_SET};
+use super::{SocketSetWrapper, LISTEN_TABLE, SOCKET_SET, TCP_RESULTS};
 
+use alloc::vec::Vec;
 // State transitions:
 // CLOSED -(connect)-> BUSY -> CONNECTING -> CONNECTED -(shutdown)-> BUSY -> CLOSED
 //       |
@@ -130,6 +131,9 @@ impl TcpSocket {
             // TODO: check remote addr unreachable
             let remote_endpoint = from_core_sockaddr(remote_addr);
             let bound_endpoint = self.bound_endpoint()?;
+
+            TCP_RESULTS.lock().record_tcp(bound_endpoint.port, remote_endpoint.port);
+
             #[cfg(not(feature = "ip"))]
             let iface = &super::ETH0.iface;
 
@@ -665,4 +669,39 @@ fn get_ephemeral_port() -> AxResult<u16> {
         tries += 1;
     }
     ax_err!(AddrInUse, "no avaliable ports!")
+}
+
+pub struct TCPResult(u16, u16);
+pub struct TCPResults
+{
+    results: Vec<TCPResult>,
+}
+
+impl TCPResults
+{
+    pub fn new() ->Self
+    {
+        TCPResults
+        {
+            results: Vec::new()
+        }
+    }
+
+    pub fn record_tcp(&mut self, src_port: u16, dst_port: u16)
+    {
+        self.results.push(TCPResult(src_port, dst_port));
+    }
+
+    pub fn show_results(&self)
+    {
+        error!("total built {} tcp link(s)", self.results.len());
+        if self.results.len() > 0
+        {
+            for _port in self.results.iter()
+            {
+                error!("tcp link src_port:{} dst_port:{}", _port.0, _port.1);
+            }
+        }
+    }
+
 }

@@ -31,6 +31,8 @@ axdriver = { path = "../axdriver", features = ["net"] }
 axio = { path = "../../crates/axio" }
 crate_interface = { path = "../../crates/crate_interface" }
 
+spinlock = { path = "../../crates/spinlock" }
+
 [dependencies.smoltcp]
 git = "https://github.com/rcore-os/smoltcp.git"
 rev = "2ade274"

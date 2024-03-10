@@ -26,6 +26,10 @@ pub use self::dns::dns_query;
 pub use self::tcp::TcpSocket;
 pub use self::udp::UdpSocket;
 pub use addr::{from_core_sockaddr, into_core_sockaddr};
+
+use spinlock::SpinNoIrq;
+use tcp::TCPResults;
+
 #[allow(unused)]
 macro_rules! env_or_default {
     ($key:literal) => {
@@ -48,7 +52,7 @@ const LISTEN_QUEUE_SIZE: usize = 512;
 
 static LISTEN_TABLE: LazyInit<ListenTable> = LazyInit::new();
 static SOCKET_SET: LazyInit<SocketSetWrapper> = LazyInit::new();
-
+pub static TCP_RESULTS: LazyInit<SpinNoIrq<TCPResults>> = LazyInit::new();
 cfg_if::cfg_if! {
     if #[cfg(feature = "ip")] {
         mod loopback;
@@ -373,4 +377,11 @@ pub(crate) fn init(_net_dev: AxNetDevice) {
 
     SOCKET_SET.init_by(SocketSetWrapper::new());
     LISTEN_TABLE.init_by(ListenTable::new());
+    TCP_RESULTS.init_by(SpinNoIrq::new(TCPResults::new()));
+
+}
+
+pub fn show_tcp_results()
+{
+    TCP_RESULTS.lock().show_results();
 }

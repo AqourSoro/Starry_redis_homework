@@ -14,6 +14,7 @@ use axtask::{TaskId, EXITED_TASKS};
 use lazy_init::LazyInit;
 use spinlock::SpinNoIrq;
 use syscall_utils::{init_current_dir, new_file, FileFlags};
+use axnet::show_tcp_results;
 
 /// 初赛测例
 #[allow(dead_code)]
@@ -433,6 +434,7 @@ impl TestResult {
 
     /// 完成了所有测例之后，打印测试结果
     pub fn show_result(&self) {
+        show_tcp_results();
         info!(
             " --------------- all test ended, passed {} / {} --------------- ",
             self.accepted, self.sum

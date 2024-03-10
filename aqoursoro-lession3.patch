@@ -1,0 +1,177 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 7e61f96..104ec5d 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -466,6 +466,7 @@ dependencies = [
+  "log",
+  "smoltcp",
+  "spin 0.9.8",
++ "spinlock",
+ ]
+ 
+ [[package]]
+@@ -1923,6 +1924,7 @@ dependencies = [
+  "axfeat",
+  "axhal",
+  "axlog",
++ "axnet",
+  "axprocess",
+  "axruntime",
+  "axsignal",
+diff --git a/modules/axnet/Cargo.toml b/modules/axnet/Cargo.toml
+index 3e8c14b..b4e7439 100644
+--- a/modules/axnet/Cargo.toml
++++ b/modules/axnet/Cargo.toml
+@@ -31,6 +31,8 @@ axdriver = { path = "../axdriver", features = ["net"] }
+ axio = { path = "../../crates/axio" }
+ crate_interface = { path = "../../crates/crate_interface" }
+ 
++spinlock = { path = "../../crates/spinlock" }
++
+ [dependencies.smoltcp]
+ git = "https://github.com/rcore-os/smoltcp.git"
+ rev = "2ade274"
+diff --git a/modules/axnet/src/lib.rs b/modules/axnet/src/lib.rs
+index 36b0669..49dc89e 100644
+--- a/modules/axnet/src/lib.rs
++++ b/modules/axnet/src/lib.rs
+@@ -38,6 +38,7 @@ pub use self::net_impl::{bench_receive, bench_transmit};
+ pub use self::net_impl::{dns_query, from_core_sockaddr, into_core_sockaddr, poll_interfaces};
+ pub use smoltcp::time::Duration;
+ pub use smoltcp::wire::{IpAddress as IpAddr, IpEndpoint as SocketAddr, Ipv4Address as Ipv4Addr};
++pub use self::net_impl::show_tcp_results;
+ 
+ use axdriver::{prelude::*, AxDeviceContainer};
+ 
+diff --git a/modules/axnet/src/smoltcp_impl/mod.rs b/modules/axnet/src/smoltcp_impl/mod.rs
+index 4162ad9..90409e8 100644
+--- a/modules/axnet/src/smoltcp_impl/mod.rs
++++ b/modules/axnet/src/smoltcp_impl/mod.rs
+@@ -26,6 +26,10 @@ pub use self::dns::dns_query;
+ pub use self::tcp::TcpSocket;
+ pub use self::udp::UdpSocket;
+ pub use addr::{from_core_sockaddr, into_core_sockaddr};
++
++use spinlock::SpinNoIrq;
++use tcp::TCPResults;
++
+ #[allow(unused)]
+ macro_rules! env_or_default {
+     ($key:literal) => {
+@@ -48,7 +52,7 @@ const LISTEN_QUEUE_SIZE: usize = 512;
+ 
+ static LISTEN_TABLE: LazyInit<ListenTable> = LazyInit::new();
+ static SOCKET_SET: LazyInit<SocketSetWrapper> = LazyInit::new();
+-
++pub static TCP_RESULTS: LazyInit<SpinNoIrq<TCPResults>> = LazyInit::new();
+ cfg_if::cfg_if! {
+     if #[cfg(feature = "ip")] {
+         mod loopback;
+@@ -373,4 +377,11 @@ pub(crate) fn init(_net_dev: AxNetDevice) {
+ 
+     SOCKET_SET.init_by(SocketSetWrapper::new());
+     LISTEN_TABLE.init_by(ListenTable::new());
++    TCP_RESULTS.init_by(SpinNoIrq::new(TCPResults::new()));
++
++}
++
++pub fn show_tcp_results()
++{
++    TCP_RESULTS.lock().show_results();
+ }
+diff --git a/modules/axnet/src/smoltcp_impl/tcp.rs b/modules/axnet/src/smoltcp_impl/tcp.rs
+index 83c64a2..1041c3c 100644
+--- a/modules/axnet/src/smoltcp_impl/tcp.rs
++++ b/modules/axnet/src/smoltcp_impl/tcp.rs
+@@ -13,8 +13,9 @@ use smoltcp::socket::tcp::{self, ConnectError, State};
+ use smoltcp::wire::{IpEndpoint, IpListenEndpoint};
+ 
+ use super::addr::{from_core_sockaddr, into_core_sockaddr, is_unspecified, UNSPECIFIED_ENDPOINT};
+-use super::{SocketSetWrapper, LISTEN_TABLE, SOCKET_SET};
++use super::{SocketSetWrapper, LISTEN_TABLE, SOCKET_SET, TCP_RESULTS};
+ 
++use alloc::vec::Vec;
+ // State transitions:
+ // CLOSED -(connect)-> BUSY -> CONNECTING -> CONNECTED -(shutdown)-> BUSY -> CLOSED
+ //       |
+@@ -130,6 +131,9 @@ impl TcpSocket {
+             // TODO: check remote addr unreachable
+             let remote_endpoint = from_core_sockaddr(remote_addr);
+             let bound_endpoint = self.bound_endpoint()?;
++
++            TCP_RESULTS.lock().record_tcp(bound_endpoint.port, remote_endpoint.port);
++
+             #[cfg(not(feature = "ip"))]
+             let iface = &super::ETH0.iface;
+ 
+@@ -666,3 +670,38 @@ fn get_ephemeral_port() -> AxResult<u16> {
+     }
+     ax_err!(AddrInUse, "no avaliable ports!")
+ }
++
++pub struct TCPResult(u16, u16);
++pub struct TCPResults
++{
++    results: Vec<TCPResult>,
++}
++
++impl TCPResults
++{
++    pub fn new() ->Self
++    {
++        TCPResults
++        {
++            results: Vec::new()
++        }
++    }
++
++    pub fn record_tcp(&mut self, src_port: u16, dst_port: u16)
++    {
++        self.results.push(TCPResult(src_port, dst_port));
++    }
++
++    pub fn show_results(&self)
++    {
++        error!("total built {} tcp link(s)", self.results.len());
++        if self.results.len() > 0
++        {
++            for _port in self.results.iter()
++            {
++                error!("tcp link src_port:{} dst_port:{}", _port.0, _port.1);
++            }
++        }
++    }
++
++}
+diff --git a/ulib/axstarry/syscall_entry/Cargo.toml b/ulib/axstarry/syscall_entry/Cargo.toml
+index 805afba..42ef776 100644
+--- a/ulib/axstarry/syscall_entry/Cargo.toml
++++ b/ulib/axstarry/syscall_entry/Cargo.toml
+@@ -77,6 +77,7 @@ axhal = { path = "../../../modules/axhal" }
+ axtask = { path = "../../../modules/axtask" }
+ axprocess = { path = "../../../modules/axprocess" }
+ axsignal = { path = "../../../modules/axsignal", optional = true }
++axnet = { path = "../../../modules/axnet" }
+ 
+ syscall_utils = { path = "../syscall_utils" }
+ syscall_fs = { path = "../syscall_fs", optional = true }
+diff --git a/ulib/axstarry/syscall_entry/src/test.rs b/ulib/axstarry/syscall_entry/src/test.rs
+index 1c03177..9652f79 100644
+--- a/ulib/axstarry/syscall_entry/src/test.rs
++++ b/ulib/axstarry/syscall_entry/src/test.rs
+@@ -14,6 +14,7 @@ use axtask::{TaskId, EXITED_TASKS};
+ use lazy_init::LazyInit;
+ use spinlock::SpinNoIrq;
+ use syscall_utils::{init_current_dir, new_file, FileFlags};
++use axnet::show_tcp_results;
+ 
+ /// 初赛测例
+ #[allow(dead_code)]
+@@ -433,6 +434,7 @@ impl TestResult {
+ 
+     /// 完成了所有测例之后，打印测试结果
+     pub fn show_result(&self) {
++        show_tcp_results();
+         info!(
+             " --------------- all test ended, passed {} / {} --------------- ",
+             self.accepted, self.sum
